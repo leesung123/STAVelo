@@ -5,7 +5,7 @@ STAVelo is a deep learning method for inferring RNA velocity from spatial transc
 
 ![](./STAVelo_overview.png)
 
-## installation
+## Installation
 It is recommended to use a Python version  `3.9`.
 * set up conda environment for STAVelo:
 ```
