@@ -32,7 +32,7 @@ setup(
         'umap-learn==0.5.12',
         'scvelo==0.2.5',
         'igraph==0.10.4',
-        'scanpy==1.8.2',
+        'scanpy==1.9.2',
         'loompy==3.0.8',
         'numba==0.60.0',
         'pynndescent==0.6.0',
