@@ -114,6 +114,10 @@ def train_STAVelo(adata, hidden_dims=[512, 30, 512], n_epochs=1000, lr=0.001,
     adata.obsm['beta'] = beta_tmp.to('cpu').detach().numpy()
     adata.obsm['gamma'] = gamma_tmp.to('cpu').detach().numpy()
 
+    adata.layers["alpha"] = adata.obsm["alpha"]
+    adata.layers["beta"] = adata.obsm["beta"]
+    adata.layers["gamma"] = adata.obsm["gamma"]
+
     if save_rep:
         adata.obsm['rep_1'] = z1.to('cpu').detach().numpy()
         adata.obsm['rep_2'] = z2.to('cpu').detach().numpy()
