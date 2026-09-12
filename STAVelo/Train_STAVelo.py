@@ -124,6 +124,6 @@ def train_STAVelo(adata, hidden_dims=[512, 30, 512], n_epochs=1000, lr=0.001,
         adata.obsm['rep_3'] = z3.to('cpu').detach().numpy()
 
     if save_loss:
-        adata.uns['STAVelo_loss'] = loss
+        adata.uns['STAVelo_loss'] = loss.to('cpu').detach().numpy()
 
     return adata

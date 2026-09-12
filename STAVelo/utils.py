@@ -11,52 +11,84 @@ import torch.nn.functional as F
 
 
 def Transfer_pytorch_Data(adata):
-    G_df = adata.uns['Spatial_Net'].copy()
-    cells = np.array(adata.obs_names)
-    cells_id_tran = dict(zip(cells, range(cells.shape[0])))
+
+    if 'Spatial_Net' not in adata.uns:
+        raise ValueError("Spatial_Net is not existed! Run Cal_Spatial_Net first!")
+
+    spatial_net = adata.uns['Spatial_Net']
+    required_cols = {'Cell1', 'Cell2', 'Distance'}
+    if not required_cols.issubset(spatial_net.columns):
+        raise ValueError("Spatial_Net must contain columns Cell1, Cell2, Distance.")
+
+    dist_raw = np.asarray(spatial_net['Distance'], dtype=np.float64)
+    invalid_dist = ~np.isfinite(dist_raw) | (dist_raw <= 0)
+    if dist_raw.size == 0 or invalid_dist.any():
+        raise ValueError(
+            "Spatial_Net Distance must be finite and strictly greater than 0; "
+            f"found {int(invalid_dist.sum())} invalid values."
+        )
+
+    n_dup = int(spatial_net.duplicated(subset=['Cell1', 'Cell2']).sum())
+    if n_dup > 0:
+        raise ValueError(
+            f"Spatial_Net contains {n_dup} duplicate edges (Cell1, Cell2)."
+        )
+
+    n_obs = adata.n_obs
+    cells_id_tran = dict(zip(np.asarray(adata.obs_names), range(n_obs)))
+
+    G_df = spatial_net.copy()
     G_df['Cell1'] = G_df['Cell1'].map(cells_id_tran)
     G_df['Cell2'] = G_df['Cell2'].map(cells_id_tran)
 
-    G = sp.coo_matrix((np.ones(G_df.shape[0]), (G_df['Cell1'], G_df['Cell2'])), shape=(adata.n_obs, adata.n_obs))
-    G = G + sp.eye(G.shape[0])
+    valid = G_df['Cell1'].notna() & G_df['Cell2'].notna()
+    c1 = G_df.loc[valid, 'Cell1'].to_numpy(dtype=np.int64)
+    c2 = G_df.loc[valid, 'Cell2'].to_numpy(dtype=np.int64)
+    has_neighbor = np.zeros(n_obs, dtype=bool)
+    if c1.size:
+        has_neighbor[c1] = True
+    if not has_neighbor.all():
+        missing = np.asarray(adata.obs_names)[~has_neighbor]
+        raise ValueError(
+            "Every cell must have at least one neighbor in Spatial_Net; "
+            f"{missing.size} cells have none (e.g. {missing[:5].tolist()})."
+        )
 
+    G = sp.coo_matrix((np.ones(G_df.shape[0]), (G_df['Cell1'], G_df['Cell2'])),
+                      shape=(n_obs, n_obs))
+    G = G + sp.eye(G.shape[0])
     edgeList = np.nonzero(G)
 
-    # u and s
-    if isinstance(adata.layers['unspliced'], np.ndarray) and isinstance(adata.layers['spliced'], np.ndarray):
-        X_concatenated = np.concatenate([adata.layers['unspliced'], adata.layers['spliced']], axis=1)
-        X_u = adata.layers['unspliced']
-        X_s = adata.layers['spliced']
-    else:
-        X_concatenated = np.concatenate([adata.layers['unspliced'].todense(), adata.layers['spliced'].todense()], axis=1)
-        X_u = adata.layers['unspliced'].todense()
-        X_s = adata.layers['spliced'].todense()
+    dist = G_df.loc[valid, 'Distance'].to_numpy(dtype=np.float64)
+    W = sp.csr_matrix((1.0 / dist, (c1, c2)), shape=(n_obs, n_obs))
+    row_sum = np.asarray(W.sum(axis=1)).ravel()
+    inv_row = np.zeros_like(row_sum)
+    nz = row_sum > 0
+    inv_row[nz] = 1.0 / row_sum[nz]
+    W = sp.diags(inv_row) @ W
 
-    # observe ds/dt
-    d_s = []
-    for i in range(adata.shape[0]):
-        barcode_tmp = adata.uns['Spatial_Net'][adata.uns['Spatial_Net']['Cell1'] == adata.obs.index[i]]['Cell2']
-        weights_tmp = 1 / adata.uns['Spatial_Net'][adata.uns['Spatial_Net']['Cell1'] == adata.obs.index[i]]['Distance']
-        weights_tmp = weights_tmp / weights_tmp.sum()
-        d_tmp = adata[barcode_tmp].layers['spliced'].todense() - adata[adata.obs.index[i]].layers[
-            'spliced'].todense()
-        d_tmp = np.average(d_tmp, axis=0, weights=weights_tmp)
-        d_s.append(d_tmp)
-    d_s = np.concatenate(d_s, axis=0)
+    def _layer_matrix(layer):
+        if sp.issparse(layer):
+            return layer.tocsr()
+        return np.asarray(layer)
 
-    # observe du/dt
-    d_u = []
-    for i in range(adata.shape[0]):
-        barcode_tmp = adata.uns['Spatial_Net'][adata.uns['Spatial_Net']['Cell1'] == adata.obs.index[i]]['Cell2']
-        weights_tmp = 1 / adata.uns['Spatial_Net'][adata.uns['Spatial_Net']['Cell1'] == adata.obs.index[i]]['Distance']
-        weights_tmp = weights_tmp / weights_tmp.sum()
-        d_tmp = adata[barcode_tmp].layers['unspliced'].todense() - adata[adata.obs.index[i]].layers[
-            'unspliced'].todense()
-        d_tmp = np.average(d_tmp, axis=0, weights=weights_tmp)
-        d_u.append(d_tmp)
-    d_u = np.concatenate(d_u, axis=0)
+    def _to_dense(mat):
+        if sp.issparse(mat):
+            return mat.toarray()
+        return np.asarray(mat)
 
-    # Create PyTorch Geometric Data object
+    def _obs_deriv(X):
+        dX = W @ X - X
+        return _to_dense(dX)
+
+    X_u = _layer_matrix(adata.layers['unspliced'])
+    X_s = _layer_matrix(adata.layers['spliced'])
+    d_u = _obs_deriv(X_u)
+    d_s = _obs_deriv(X_s)
+    X_u = _to_dense(X_u)
+    X_s = _to_dense(X_s)
+    X_concatenated = np.concatenate([X_u, X_s], axis=1)
+
     data = Data(edge_index=torch.LongTensor(np.array([edgeList[0], edgeList[1]])),
                 x=torch.FloatTensor(X_concatenated),
                 u=torch.FloatTensor(X_u),
