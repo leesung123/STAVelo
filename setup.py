@@ -28,6 +28,7 @@ setup(
         'joblib==1.5.3',
         'statsmodels==0.14.6',
         'matplotlib==3.6.0',
+        'matplotlib-inline==0.1.5',
         'seaborn==0.13.2',
         'umap-learn==0.5.12',
         'scvelo==0.2.5',
